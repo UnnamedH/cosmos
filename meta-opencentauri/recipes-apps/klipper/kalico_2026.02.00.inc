@@ -4,7 +4,7 @@ LIC_FILES_CHKSUM = "file://COPYING;md5=1ebbd3e34237af26da5dc08a4e440464"
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
-SRC_URI = "git://github.com/KalicoCrew/kalico.git;protocol=https;branch=main \
+SRC_URI = "git://github.com/jamesturton/kalico.git;protocol=https;branch=klipper-pr-7066 \
     file://0001-remove-save-config-subfile-check.patch \
     file://0002-reduce-calibration-difference-tolerance.patch \
     file://0001-Reduce-log-rotate-threshold.patch \
@@ -19,9 +19,9 @@ SRC_URI = "git://github.com/KalicoCrew/kalico.git;protocol=https;branch=main \
     file://canvas_rfid.py;subdir=${BP}/klippy/extras \
     file://canvas_filament_sensor.py;subdir=${BP}/klippy/extras \
 "
-SRCREV = "d949a776936f082d0fef9365ea4fac6b6b5f03a8"
+SRCREV = "570d58cf8bea7cf8fe01289ff9ea0137f2f19211"
 
-PR = "r22"
+PR = "r23"
 
 DEPENDS = " \
     python3-native \
