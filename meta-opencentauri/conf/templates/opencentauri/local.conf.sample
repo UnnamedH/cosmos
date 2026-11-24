@@ -12,3 +12,8 @@ BB_DISKMON_DIRS ??= "\
     HALT,/tmp,10M,1K"
 
 CONF_VERSION = "2"
+
+# Optional. Puts the printer on a Tailscale tailnet. Leave this commented
+# for a normal build: tailscaled is a Go process and the stock board has
+# about 128 MB of RAM. Instructions are in Development.md.
+# DISTRO_FEATURES:append = " tailscale"

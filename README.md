@@ -53,6 +53,10 @@ Yes, an alpha version of COSMOS for the CC2 is currently being tested and a publ
 ## Is COSMOS related to the OpenCentauri board?
 No, the OpenCentauri board is another ongoing project to create a much more powerful drop in mainboard replacement for the Centauri Carbon. 
 
+## Can I put the printer on my Tailscale network?
+
+Not in a normal build. Tailscale is optional because `tailscaled` is a Go program and the stock board has about 128 MB of RAM. Build instructions, login, and the measured size are in [Development.md](./Development.md#tailscale).
+
 ## Can I add a raspberrypi to offload work from the stock mainboard?
 
 Not currently. The stock hardware is not very powerful and has limited memory which is why adding a pi or other SBC may interest some, however the primary focus of the project right now is to create stable firmware for the stock board.

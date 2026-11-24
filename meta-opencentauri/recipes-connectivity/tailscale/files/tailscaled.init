@@ -1,0 +1,264 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          tailscaled
+# Required-Start:    $local_fs $remote_fs $network
+# Required-Stop:     $local_fs $remote_fs $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Tailscale node agent
+### END INIT INFO
+
+# BusyBox start-stop-daemon on this image has no long options.
+# Klipper is priority 95 and Moonraker 96; this script is 98 so the
+# printer services allocate memory first.
+
+DAEMON=/usr/sbin/tailscaled
+CLI=/usr/bin/tailscale
+PIDFILE=/var/run/tailscaled.pid
+UP_PIDFILE=/var/run/tailscale-up.pid
+SOCK=/var/run/tailscale/tailscaled.sock
+AUTHKEY=/etc/tailscale/authkey
+
+if [ -f /etc/default/tailscaled ]; then
+    . /etc/default/tailscaled
+fi
+
+TS_ENABLE=${TS_ENABLE:-1}
+TS_GOMEMLIMIT=${TS_GOMEMLIMIT:-40MiB}
+TS_GOMAXPROCS=${TS_GOMAXPROCS:-1}
+if [ -z "${TS_UP_ARGS+x}" ]; then
+    TS_UP_ARGS="--accept-dns=false --ssh=false --netfilter-mode=off"
+fi
+
+export GOMEMLIMIT="$TS_GOMEMLIMIT"
+export GOMAXPROCS="$TS_GOMAXPROCS"
+
+log() {
+    echo "tailscaled: $*"
+    if [ -n "$LOG" ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG" 2>/dev/null || true
+    fi
+}
+
+pick_log() {
+    if [ -d /board-resource ] && [ -w /board-resource ]; then
+        echo /board-resource/tailscaled.log
+    else
+        mkdir -p /var/log 2>/dev/null || true
+        echo /var/log/tailscaled.log
+    fi
+}
+
+rotate_log() {
+    if [ -f "$LOG" ]; then
+        size=$(wc -c < "$LOG" | tr -d ' ')
+        if [ "$size" -gt 1048576 ]; then
+            mv "$LOG" "$LOG.old"
+        fi
+    fi
+}
+
+root_is_readonly() {
+    awk '$2=="/" && $4 ~ /(^|,)ro(,|$)/ { found=1 } END { exit !found }' /proc/mounts
+}
+
+pick_state_dir() {
+    if [ -n "$TS_STATE_DIR" ]; then
+        echo "$TS_STATE_DIR"
+        return
+    fi
+    if mountpoint -q /data; then
+        echo /data/tailscale
+        return
+    fi
+    if root_is_readonly; then
+        echo ""
+        return
+    fi
+    echo /var/lib/tailscale
+}
+
+daemon_alive() {
+    [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
+}
+
+backend_state() {
+    "$CLI" --socket="$SOCK" status --json 2>/dev/null \
+        | sed -n 's/.*"BackendState"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | sed -n '1p'
+}
+
+stop_login() {
+    if [ -f "$UP_PIDFILE" ]; then
+        uppid=$(cat "$UP_PIDFILE")
+        kill "$uppid" 2>/dev/null || true
+        rm -f "$UP_PIDFILE"
+    fi
+}
+
+# Runs in the background. Killed on stop via UP_PIDFILE.
+login_loop() {
+    child=0
+    trap 'if [ "$child" != 0 ]; then kill "$child" 2>/dev/null || true; fi; exit 0' TERM INT
+    i=0
+    while [ "$i" -lt 12 ]; do
+        if ! daemon_alive; then
+            return 0
+        fi
+        state=$(backend_state)
+        case "$state" in
+            Running)
+                log "logged in"
+                if [ "$TUN_MODE" = "userspace" ]; then
+                    log "userspace networking is on, so the printer UI is not on the tailscale IP"
+                    log "publish it with: tailscale serve --bg 80"
+                fi
+                return 0
+                ;;
+            Stopped)
+                # Already authenticated. A bare up does not change settings.
+                "$CLI" --socket="$SOCK" up --timeout=30s >>"$LOG" 2>&1 &
+                child=$!
+                wait "$child" || true
+                child=0
+                ;;
+            NeedsLogin)
+                if [ -s "$AUTHKEY" ]; then
+                    # shellcheck disable=SC2086
+                    "$CLI" --socket="$SOCK" up --timeout=2m \
+                        --auth-key="file:$AUTHKEY" \
+                        $TS_UP_ARGS \
+                        ${TS_HOSTNAME:+--hostname=$TS_HOSTNAME} \
+                        >>"$LOG" 2>&1 &
+                    child=$!
+                    wait "$child" || true
+                    child=0
+                else
+                    log "not logged in. On the serial console or over SSH, run:"
+                    log "  tailscale up --accept-dns=false --ssh=false --netfilter-mode=off"
+                    log "and open the URL it prints. Or put an auth key in $AUTHKEY"
+                    return 0
+                fi
+                ;;
+            NeedsMachineAuth)
+                log "waiting for a tailnet admin to approve this printer"
+                return 0
+                ;;
+        esac
+        i=$((i + 1))
+        sleep 5
+    done
+    log "gave up waiting to log in; see $LOG"
+}
+
+start_login() {
+    stop_login
+    login_loop &
+    echo $! > "$UP_PIDFILE"
+}
+
+start_daemon() {
+    mode=$1
+    tun_arg=""
+    if [ "$mode" = "userspace" ]; then
+        tun_arg="--tun=userspace-networking"
+    fi
+    # shellcheck disable=SC2086
+    start-stop-daemon -S -b -m -p "$PIDFILE" -N 10 -x "$DAEMON" -- \
+        --statedir="$STATE_DIR" \
+        --socket="$SOCK" \
+        $tun_arg \
+        $TS_DAEMON_EXTRA \
+        >>"$LOG" 2>&1
+}
+
+start() {
+    if [ "$TS_ENABLE" != "1" ]; then
+        echo "tailscaled: disabled (TS_ENABLE=$TS_ENABLE in /etc/default/tailscaled)"
+        return 0
+    fi
+
+    LOG=$(pick_log)
+    rotate_log
+
+    STATE_DIR=$(pick_state_dir)
+    if [ -z "$STATE_DIR" ]; then
+        log "not starting: root is read-only and /data is not mounted, so node state would be lost on reboot"
+        return 1
+    fi
+    mkdir -p "$STATE_DIR" /var/run/tailscale
+    chmod 700 "$STATE_DIR" 2>/dev/null || true
+
+    if daemon_alive; then
+        log "already running"
+        start_login
+        return 0
+    fi
+    rm -f "$PIDFILE"
+
+    TUN_MODE=kernel
+    if [ ! -c /dev/net/tun ]; then
+        modprobe tun 2>/dev/null || true
+    fi
+    if [ ! -c /dev/net/tun ]; then
+        TUN_MODE=userspace
+        log "/dev/net/tun is missing; starting with userspace networking"
+    fi
+
+    start_daemon "$TUN_MODE"
+    sleep 1
+    if ! daemon_alive && [ "$TUN_MODE" = "kernel" ]; then
+        TUN_MODE=userspace
+        log "kernel TUN failed; retrying with userspace networking"
+        rm -f "$PIDFILE"
+        start_daemon userspace
+        sleep 1
+    fi
+    if ! daemon_alive; then
+        log "failed to start; see $LOG"
+        return 1
+    fi
+    start_login
+}
+
+stop() {
+    LOG=$(pick_log)
+    stop_login
+    if [ -f "$PIDFILE" ]; then
+        start-stop-daemon -K -p "$PIDFILE" -R 10
+        rm -f "$PIDFILE"
+    fi
+}
+
+rc=0
+case "$1" in
+    start)
+        start
+        rc=$?
+        ;;
+    stop)
+        stop
+        rc=$?
+        ;;
+    restart|force-reload)
+        stop
+        sleep 1
+        start
+        rc=$?
+        ;;
+    status)
+        if daemon_alive; then
+            echo "tailscaled is running (pid $(cat "$PIDFILE"))"
+            "$CLI" --socket="$SOCK" status 2>&1 || true
+        else
+            echo "tailscaled is not running"
+            rc=1
+        fi
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        rc=1
+        ;;
+esac
+
+exit $rc

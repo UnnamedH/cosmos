@@ -179,6 +179,130 @@ For installing to internal eMMC storage, use the signed archive installation:
 4. Insert the USB drive into the printer
 5. Import the offline update via the printer screen
 
+## Tailscale
+
+Tailscale is off unless you opt in. The package is the combined
+`tailscaled` binary from the `tailscale` recipe already in
+`meta-networking` (1.94.2 in the pinned layer), built static for
+armv7 with the CLI linked in (`ts_include_cli`) and the integrations
+this board cannot use left out (Kubernetes, Tailscale SSH, Taildrop,
+subnet routing, exit nodes, iptables, and similar).
+
+A normal image does not contain it and the kernel stays as it is.
+`fragment.cfg` still leaves out `CONFIG_NETFILTER`. Turning the
+feature on adds a TUN device, IPv6, and policy routing, which
+tailscaled needs to put a real 100.x address on the printer. It does
+not turn netfilter on. The conntrack table is about 1 MB, and basic
+tailnet access does not need it. Subnet routers and exit nodes will
+not work.
+
+### Build and flash
+
+In `build/conf/local.conf`:
+
+```bash
+DISTRO_FEATURES:append = " tailscale"
+```
+
+The leading space is required. Then build and flash the same way as a
+normal eMMC image:
+
+```bash
+bitbake cosmos
+```
+
+The `.swu` (CC1) or `.zip.sig` (CC2) is installed with the usual USB
+update. The feature also applies to `cosmos-image-usb`.
+
+### Log in
+
+`tailscaled` starts at boot, after Klipper and Moonraker. Node state
+is `/data/tailscale` when `/data` is mounted, so it survives an OTA
+update. On a writable USB root it is `/var/lib/tailscale`. `/etc` is
+the overlay on `/data`, so the files below survive an update too.
+
+The first login has to pass three flags. The kernel has no netfilter,
+and Tailscale's defaults would also take over DNS:
+
+```bash
+tailscale up --accept-dns=false --ssh=false --netfilter-mode=off
+```
+
+Open the URL it prints, in a browser on a machine that is already on
+the tailnet (or that can log into the Tailscale admin console).
+Afterwards `tailscale ip -4` is the address to use for Mainsail,
+Fluidd, and SSH. Dropbear is already listening on port 22.
+
+To log in without a console, create an auth key in the Tailscale admin
+console (a reusable, tagged key is the least annoying on a printer;
+disable key expiry or the node will drop off later). Either:
+
+- write that one line to `/etc/tailscale/authkey` (mode `600`) and run
+  `service tailscaled restart`, or
+- put the same line in a file named `tailscale-authkey` on a FAT USB
+  stick and insert it. The stick is handled like `wpa_supplicant.conf`:
+  the file is copied to `/etc/tailscale/authkey`, removed from the
+  stick, and the service is started.
+
+Moonraker only trusts LAN ranges by default. A tailscale build also
+trusts `100.64.0.0/10` and `fd7a:115c:a1e0::/48`, which is what makes
+the web UI answer on the tailscale address. `tailscaled` is added to
+Moonraker's service list so it can be restarted from the UI.
+
+`/etc/default/tailscaled` has `TS_ENABLE`, the memory cap, and the
+`tailscale up` flags. Set `TS_ENABLE=0` to keep the packages installed
+but not run the daemon.
+
+A factory reset wipes the `/etc` overlay, including the auth key, and
+does not delete `/data/tailscale`. The printer stays on the tailnet.
+`tailscale logout`, or `rm -rf /data/tailscale` followed by a reboot,
+removes it.
+
+If `/dev/net/tun` cannot be opened, the service falls back to
+userspace networking. In that mode other devices cannot open
+`http://100.x.x.x` until you publish the UI:
+
+```bash
+tailscale serve --bg 80
+```
+
+### Size and memory
+
+Measured from a `CGO_ENABLED=0` `GOARM=7` build of the same 1.94.2
+sources and the same omit tags the recipe uses (Go 1.25.5, stripped):
+
+| Build | Uncompressed | lz4 -1 (squashfs is lz4) |
+| --- | --- | --- |
+| This recipe (combined binary) | 18.6 MiB (19529912 bytes) | 10.5 MiB |
+| Same version with only the stock meta-oe omit set | 30.1 MiB | 16.0 MiB |
+
+Idle RSS on x86_64, userspace networking, before login, with
+`GOMEMLIMIT=40MiB` and `GOMAXPROCS=1`: about 24 MB. About 19 MB of
+that is the mapped binary (reclaimable file cache) and about 6 MB is
+anonymous heap. The 40 MiB cap was not binding at idle. A connected
+node on a larger tailnet will use more heap, up to that cap, and then
+the Go collector runs more often. Kernel mode was not measured here
+(opening a TUN device was not permitted in the build environment); it
+is the mode the init script uses when `/dev/net/tun` exists, and it is
+the one that puts the printer's own ports on the tailscale address.
+
+The eMMC rootfs partition is 128 MB. About 11 MB of compressed
+Tailscale fits only if the rest of the image still leaves that much
+room. If `wic` fails because the squashfs is larger than the
+partition, the image is over the limit.
+
+The daemon is niced to 10 so Klipper is preferred. There is no memory
+cgroup: the kernel build turns cgroups off.
+
+### What this does not do
+
+- Subnet routing and exit nodes. Those need netfilter.
+- Tailscale SSH. Dropbear is the SSH server. It is reachable on the
+  tailscale address once the TUN device is up.
+- MagicDNS on the printer itself (`--accept-dns=false`). Other
+  devices still resolve the printer's name.
+- A stock build. Leave the `DISTRO_FEATURES` line commented out.
+
 ## Configuration and Services
 
 - **Klipper Configuration:** In the current build, the Klipper `printer.cfg` is located in `/etc/klipper/config/printer.cfg`.

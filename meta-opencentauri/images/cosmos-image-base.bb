@@ -54,6 +54,9 @@ CORE_IMAGE_EXTRA_INSTALL += "\
 
 CORE_IMAGE_EXTRA_INSTALL:append:centauri-carbon-2 = " centauri-carbon-2-detect"
 
+# Off unless DISTRO_FEATURES contains tailscale. See Development.md.
+CORE_IMAGE_EXTRA_INSTALL:append = "${@bb.utils.contains('DISTRO_FEATURES', 'tailscale', ' tailscale tailscaled', '', d)}"
+
 INITRAMFS_IMAGE = "core-image-tiny-initramfs"
 INITRAMFS_FSTYPES = "cpio.gz"
 INITRAMFS_IMAGE_BUNDLE = "1"
