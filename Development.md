@@ -313,8 +313,55 @@ cgroup: the kernel build turns cgroups off.
 
 ## Troubleshooting Build Issues
 
+### Where to put the tree (WSL2)
+
+Clone and build under your Linux home directory (`/home/...`). That disk is ext4. A tree on `/mnt/c` (the Windows drive) is case-insensitive and breaks unpack and `autoreconf`. Check with:
+
+```bash
+pwd
+findmnt -T .
+```
+
+`pwd` must not start with `/mnt/`, and the filesystem type must be `ext4`. If the tree is on the Windows drive, clone it again under `$HOME` and build there. Do not copy `build/tmp` across.
+
+Source the environment in each new shell so `bitbake` is the copy in this repo (`bitbake/bin/bitbake`, 2.18), not a copy from apt:
+
+```bash
+TEMPLATECONF="$PWD/meta-opencentauri/conf/templates/opencentauri" source openembedded-core/oe-init-build-env build
+which bitbake
+bitbake --version
+```
+
+### bzip2-native and `configure.ac`
+
+Upstream bzip2 1.0.8 has no Autotools input. The recipe adds one from the layer:
+
+`openembedded-core/meta/recipes-extended/bzip2/bzip2/configure.ac`
+
+via `file://configure.ac;subdir=${BP}`. Unpack places it at:
+
+`build/tmp/work/x86_64-linux/bzip2-native/1.0.8/sources/bzip2-1.0.8/configure.ac`
+
+`do_configure` then rewrites `%BZIP2_VERSION%` in that file and runs `autoreconf`. The layer file contains `AC_INIT`. Two failures come from the work directory, not from that recipe:
+
+- `autoreconf: error: configure.ac: AC_INIT not found` means the `configure.ac` that was unpacked is empty or is not the layer file. Check the layer copy, then the unpacked copy (commands below).
+- `sed: can't read .../sources/bzip2-1.0.8/configure.ac` means configure ran without unpacking. Deleting `tmp/work/.../bzip2-native` by hand removes the sources but leaves the task stamps in `tmp/stamps`, so BitBake skips unpack. `bitbake -c cleansstate` takes a recipe name, not a path to a `.bb` file. `virtual:native:.../bzip2_1.0.8.bb` does not clean `bzip2-native`.
+
+```bash
+grep AC_INIT openembedded-core/meta/recipes-extended/bzip2/bzip2/configure.ac
+bitbake -c cleansstate bzip2-native
+bitbake -c unpack bzip2-native
+f=tmp/work/x86_64-linux/bzip2-native/1.0.8/sources/bzip2-1.0.8/configure.ac
+grep AC_INIT "$f"
+bitbake bzip2-native
+```
+
+`grep` on the layer file and on `$f` must both print `AC_INIT(bzip2, %BZIP2_VERSION%)`. The version token is filled in during configure.
+
+Warnings that are not this failure: a fetch falling back to a mirror, and `SOURCE_DATE_EPOCH value '' is invalid`. The latter is an empty stamp left by an interrupted task or a deleted source tree. `cleansstate` removes it. BitBake then uses its fallback timestamp.
+
 ### Clean Build
-If you encounter build issues, try cleaning the specific package:
+If you encounter build issues, try cleaning the specific package. Use the recipe name:
 ```bash
 bitbake -c cleansstate <package-name>
 bitbake <image-target>
