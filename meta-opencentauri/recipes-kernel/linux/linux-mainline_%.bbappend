@@ -23,3 +23,20 @@ SRC_URI:append = " \
 
 KERNEL_MODULE_PROBECONF += "rtw88_core"
 module_conf_rtw88_core = "options rtw88_core disable_lps_deep=Y"
+
+# fragment.cfg disables TUN, IPv6, and policy routing. Merge the tailscale
+# fragment after it, then force the symbols so oldconfig cannot drop them.
+SRC_URI:append = "${@bb.utils.contains('DISTRO_FEATURES', 'tailscale', ' file://tailscale.cfg', '', d)}"
+
+do_configure:append() {
+    if ${@bb.utils.contains('DISTRO_FEATURES', 'tailscale', 'true', 'false', d)}; then
+        if [ -f ${B}/.config ]; then
+            ${S}/scripts/config --file ${B}/.config \
+                -e TUN \
+                -e IPV6 \
+                -e IP_ADVANCED_ROUTER \
+                -e IP_MULTIPLE_TABLES
+            oe_runmake -C ${S} O=${B} olddefconfig
+        fi
+    fi
+}

@@ -12,6 +12,30 @@ copy_wpa_config() {
     fi
 }
 
+# Same idea as wpa_supplicant.conf: a one-line key on the stick is copied
+# into /etc (which persists on /data) and removed from the stick.
+copy_tailscale_authkey() {
+    [ -x /usr/sbin/tailscaled ] || return 0
+    src="$1/tailscale-authkey"
+    [ -f "$src" ] || return 0
+
+    size=$(wc -c < "$src" | tr -d ' ')
+    if [ "$size" -lt 10 ] || [ "$size" -gt 4096 ]; then
+        echo "usb-mount: tailscale-authkey is ${size} bytes, leaving it on the stick"
+        return 0
+    fi
+
+    mkdir -p /etc/tailscale || return 1
+    cp "$src" /etc/tailscale/authkey || return 1
+    chmod 600 /etc/tailscale/authkey || return 1
+    rm -f "$src" || return 1
+    echo "usb-mount: installed /etc/tailscale/authkey"
+
+    if [ -x /etc/init.d/tailscaled ]; then
+        /etc/init.d/tailscaled start || true
+    fi
+}
+
 copy_gcode_files() {
     SRC_DIR="$1"
 
@@ -70,6 +94,7 @@ case "$1" in
 
         if mountpoint -q "$MOUNT_POINT"; then
             copy_wpa_config "$MOUNT_POINT"
+            copy_tailscale_authkey "$MOUNT_POINT"
             copy_gcode_files "$MOUNT_POINT"
             install_firmware_update "$MOUNT_POINT"
         fi

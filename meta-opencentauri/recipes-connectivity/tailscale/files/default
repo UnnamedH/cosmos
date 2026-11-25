@@ -1,0 +1,28 @@
+# tailscaled configuration for COSMOS.
+# /etc is overlaid on /data, so edits here survive an OTA update.
+# See Development.md for how to log the printer into a tailnet.
+
+# 0 leaves the package installed but does not start tailscaled.
+TS_ENABLE=1
+
+# Soft Go heap target. This is not a hard RSS cap: the mapped binary
+# sits on top of it. The stock board has about 128 MB of RAM.
+TS_GOMEMLIMIT=40MiB
+# Leave one core free for Klipper as often as the runtime can.
+TS_GOMAXPROCS=1
+
+# Arguments for `tailscale up`. Netfilter stays off because the kernel
+# is built without CONFIG_NETFILTER. DNS stays off so tailscaled does
+# not rewrite the printer's resolv.conf. Tailscale SSH stays off;
+# dropbear is already listening.
+TS_UP_ARGS="--accept-dns=false --ssh=false --netfilter-mode=off"
+
+# Empty uses the system hostname.
+TS_HOSTNAME=
+
+# Extra arguments appended to tailscaled itself.
+TS_DAEMON_EXTRA=
+
+# Empty selects /data/tailscale when /data is mounted (eMMC, kept across
+# OTA), otherwise /var/lib/tailscale on a writable USB root.
+TS_STATE_DIR=
